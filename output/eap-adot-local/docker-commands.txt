@@ -1,0 +1,1077 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  docker compose up -d と同じ構成を docker コマンドだけで起動する手順
+#  (compose2docker 1.0.0 で自動生成)
+# ----------------------------------------------------------------------------
+#  プロジェクト名 : eap-adot-local
+#  元の compose   : /opt/Container_Compose_file/compose.yaml
+#  (変換した場所 : /mnt/c/Users/taka_/Claude/Container_Compose_file/compose.yaml)
+#  読み込み方法   : docker compose config (Docker Compose 5.5.1 が解釈した結果)
+#  生成日時       : 2026-10-10 15:06:28
+#  実行環境       : RHEL 9.8 + Docker Engine (docker-ce 25 以降 / 推奨 29.x)
+#
+#  ■ 使い方
+#   1) RHEL に docker を使えるユーザー (root か docker グループ) でログインする
+#   2) STEP 1 から順番に、STEP ごとのかたまりをコピーしてターミナルに貼り付け
+#      Enter を押す (結果を確かめてから次の STEP へ進むと安心です)
+#      まとめて実行する場合: bash docker-commands.txt
+#   3) 片付け (compose down 相当) は docker-commands-down.txt を使う
+#   ※ 2 回目以降に実行するときは、先に片付けをしてください (同じ名前があるとエラーになります)
+#
+#  ■ 変換時の注意
+#   ・services.ecs-exec は Docker の API (docker.sock) を使います。中のプロ
+#   グラムが compose のラベル (com.docker.compose.project / service) でコン
+#   テナを探す作りの場合は、--compose-labels を付けて変換してください
+#   (compose と同じラベルが付きます)。
+#   ・services.cwagent-ssm は profiles (ssm-config) が有効になっていないため
+#   起動しません (compose の up と同じ)。起動したいときは --profile
+#   ssm-config を付けて変換し直してください。
+#   ・services.tls-verifier は profiles (verify) が有効になっていないため起
+#   動しません (compose の up と同じ)。起動したいときは --profile verify を
+#   付けて変換し直してください。
+#   ・services.jmeter は profiles (loadtest) が有効になっていないため起動し
+#   ません (compose の up と同じ)。起動したいときは --profile loadtest を付
+#   けて変換し直してください。
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# STEP 1/58 [準備] 作業フォルダへ移動し、Docker が使えるか確認する
+#   履歴展開 (!) を止めて貼り付け事故を防ぎ、プロジェクトのフォルダへ移動し
+#   て、docker コマンドとサーバー (dockerd) の両方が動いているかを確かめます。
+# ----------------------------------------------------------------------------
+set +H
+cd /opt/Container_Compose_file
+docker version
+
+# ----------------------------------------------------------------------------
+# STEP 2/58 [ネットワーク作成] ネットワーク「eap-adot-local_default」を作る
+#   (compose の対応箇所: networks.default)
+#   仮想ネットワーク「eap-adot-local_default」を作ります。つながるコンテナ:
+#   jaeger、valkey、svf-mock、ecs-metadata-mock、adot-collector、efs-mock、
+#   batch-mock、cloudwatch-logs-mock、cwagent、sqs、pki-init、mysql、backend、
+#   frontend、alb-healthcheck、alb-front、secure-api、maintenance-lambda、
+#   alb-lambda-adapter、alb、lambda、lambda-esm、ecs-exec。同じネットワーク
+#   のコンテナどうしは、サービス名で呼び合えます。
+# ----------------------------------------------------------------------------
+docker network create eap-adot-local_default
+
+# ----------------------------------------------------------------------------
+# STEP 3/58 [ボリューム作成] ボリューム「eap-adot-local_mysql-data」を作る
+#   (compose の対応箇所: volumes.mysql-data)
+#   データを保存しておく名前付きボリューム「eap-adot-local_mysql-data」を作
+#   ります。使うサービス: mysql。
+# ----------------------------------------------------------------------------
+docker volume create eap-adot-local_mysql-data
+
+# ----------------------------------------------------------------------------
+# STEP 4/58 [ボリューム作成] ボリューム「eap-adot-local_efs-logs」を作る
+#   (compose の対応箇所: volumes.efs-logs)
+#   データを保存しておく名前付きボリューム「eap-adot-local_efs-logs」を作り
+#   ます。使うサービス: efs-mock、batch-mock、cwagent、backend、frontend。
+# ----------------------------------------------------------------------------
+docker volume create eap-adot-local_efs-logs
+
+# ----------------------------------------------------------------------------
+# STEP 5/58 [ボリューム作成] ボリューム「eap-adot-local_efs-data」を作る
+#   (compose の対応箇所: volumes.efs-data)
+#   データを保存しておく名前付きボリューム「eap-adot-local_efs-data」を作り
+#   ます。使うサービス: efs-mock、batch-mock、backend、frontend。
+# ----------------------------------------------------------------------------
+docker volume create eap-adot-local_efs-data
+
+# ----------------------------------------------------------------------------
+# STEP 6/58 [ボリューム作成] ボリューム「eap-adot-local_pki」を作る
+#   (compose の対応箇所: volumes.pki)
+#   データを保存しておく名前付きボリューム「eap-adot-local_pki」を作ります。
+#   使うサービス: pki-init、mysql、backend、frontend、alb-front、secure-api、
+#   alb。
+# ----------------------------------------------------------------------------
+docker volume create eap-adot-local_pki
+
+# ----------------------------------------------------------------------------
+# STEP 7/58 [イメージ取得] イメージ「jaegertracing/jaeger:2.4.0」を用意する
+#   (compose の対応箇所: services.jaeger.image)
+#   イメージ「jaegertracing/jaeger:2.4.0」が手元に無いときだけダウンロードし
+#   ます (compose の既定 pull_policy: missing と同じ動き)。
+# ----------------------------------------------------------------------------
+docker image inspect jaegertracing/jaeger:2.4.0 > /dev/null 2>&1 || docker pull jaegertracing/jaeger:2.4.0
+
+# ----------------------------------------------------------------------------
+# STEP 8/58 [イメージ取得] イメージ「valkey/valkey:8.0」を用意する
+#   (compose の対応箇所: services.valkey.image)
+#   イメージ「valkey/valkey:8.0」が手元に無いときだけダウンロードします
+#   (compose の既定 pull_policy: missing と同じ動き)。
+# ----------------------------------------------------------------------------
+docker image inspect valkey/valkey:8.0 > /dev/null 2>&1 || docker pull valkey/valkey:8.0
+
+# ----------------------------------------------------------------------------
+# STEP 9/58 [イメージ取得] イメージ「wiremock/wiremock:3.13.0」を用意する
+#   (compose の対応箇所: services.svf-mock.image)
+#   イメージ「wiremock/wiremock:3.13.0」が手元に無いときだけダウンロードしま
+#   す (compose の既定 pull_policy: missing と同じ動き)。
+# ----------------------------------------------------------------------------
+docker image inspect wiremock/wiremock:3.13.0 > /dev/null 2>&1 || docker pull wiremock/wiremock:3.13.0
+
+# ----------------------------------------------------------------------------
+# STEP 10/58 [イメージ取得] イメージ「public.ecr.aws/aws-observability/aws-otel-collector:v0.43.3」を用意する
+#   (compose の対応箇所: services.adot-collector.image)
+#   イメージ「public.ecr.aws/aws-observability/aws-otel-collector:v0.43.3」
+#   が手元に無いときだけダウンロードします (compose の既定 pull_policy:
+#   missing と同じ動き)。
+# ----------------------------------------------------------------------------
+docker image inspect public.ecr.aws/aws-observability/aws-otel-collector:v0.43.3 > /dev/null 2>&1 || docker pull public.ecr.aws/aws-observability/aws-otel-collector:v0.43.3
+
+# ----------------------------------------------------------------------------
+# STEP 11/58 [イメージ取得] イメージ「alpine:3.21」を用意する
+#   (compose の対応箇所: services.efs-mock.image)
+#   イメージ「alpine:3.21」が手元に無いときだけダウンロードします (compose
+#   の既定 pull_policy: missing と同じ動き)。
+# ----------------------------------------------------------------------------
+docker image inspect alpine:3.21 > /dev/null 2>&1 || docker pull alpine:3.21
+
+# ----------------------------------------------------------------------------
+# STEP 12/58 [イメージ取得] イメージ「public.ecr.aws/cloudwatch-agent/cloudwatch-agent:latest」を用意する
+#   (compose の対応箇所: services.cwagent.image)
+#   イメージ「public.ecr.aws/cloudwatch-agent/cloudwatch-agent:latest」が手
+#   元に無いときだけダウンロードします (compose の既定 pull_policy: missing
+#   と同じ動き)。
+# ----------------------------------------------------------------------------
+docker image inspect public.ecr.aws/cloudwatch-agent/cloudwatch-agent:latest > /dev/null 2>&1 || docker pull public.ecr.aws/cloudwatch-agent/cloudwatch-agent:latest
+
+# ----------------------------------------------------------------------------
+# STEP 13/58 [イメージ取得] イメージ「softwaremill/elasticmq-native:1.6.11」を用意する
+#   (compose の対応箇所: services.sqs.image)
+#   イメージ「softwaremill/elasticmq-native:1.6.11」が手元に無いときだけダウ
+#   ンロードします (compose の既定 pull_policy: missing と同じ動き)。
+# ----------------------------------------------------------------------------
+docker image inspect softwaremill/elasticmq-native:1.6.11 > /dev/null 2>&1 || docker pull softwaremill/elasticmq-native:1.6.11
+
+# ----------------------------------------------------------------------------
+# STEP 14/58 [イメージ取得] イメージ「mysql:8.4.7」を用意する
+#   (compose の対応箇所: services.mysql.image)
+#   イメージ「mysql:8.4.7」が手元に無いときだけダウンロードします (compose
+#   の既定 pull_policy: missing と同じ動き)。
+# ----------------------------------------------------------------------------
+docker image inspect mysql:8.4.7 > /dev/null 2>&1 || docker pull mysql:8.4.7
+
+# ----------------------------------------------------------------------------
+# STEP 15/58 [イメージ取得] イメージ「python:3.12-slim」を用意する
+#   (compose の対応箇所: services.alb-healthcheck.image)
+#   イメージ「python:3.12-slim」が手元に無いときだけダウンロードします
+#   (compose の既定 pull_policy: missing と同じ動き)。
+# ----------------------------------------------------------------------------
+docker image inspect python:3.12-slim > /dev/null 2>&1 || docker pull python:3.12-slim
+
+# ----------------------------------------------------------------------------
+# STEP 16/58 [イメージ取得] イメージ「public.ecr.aws/lambda/python:3.12」を用意する
+#   (compose の対応箇所: services.maintenance-lambda.image)
+#   イメージ「public.ecr.aws/lambda/python:3.12」が手元に無いときだけダウン
+#   ロードします (compose の既定 pull_policy: missing と同じ動き)。
+# ----------------------------------------------------------------------------
+docker image inspect public.ecr.aws/lambda/python:3.12 > /dev/null 2>&1 || docker pull public.ecr.aws/lambda/python:3.12
+
+# ----------------------------------------------------------------------------
+# STEP 17/58 [イメージ取得] イメージ「nginx:1.27-alpine」を用意する
+#   (compose の対応箇所: services.alb.image)
+#   イメージ「nginx:1.27-alpine」が手元に無いときだけダウンロードします
+#   (compose の既定 pull_policy: missing と同じ動き)。
+# ----------------------------------------------------------------------------
+docker image inspect nginx:1.27-alpine > /dev/null 2>&1 || docker pull nginx:1.27-alpine
+
+# ----------------------------------------------------------------------------
+# STEP 18/58 [イメージ作成] サービス「pki-init」のイメージ「eap-adot-local-pki-init」をビルドする
+#   (compose の対応箇所: services.pki-init.build)
+#   Dockerfile (設計図) とビルドコンテキスト (材料フォルダ) からイメージ「
+#   eap-adot-local-pki-init」を作ります。
+# ----------------------------------------------------------------------------
+docker build \
+  --tag eap-adot-local-pki-init \
+  /opt/Container_Compose_file/compose/pki
+
+# ----------------------------------------------------------------------------
+# STEP 19/58 [イメージ作成] サービス「backend」のイメージ「eap-adot-local-backend」をビルドする
+#   (compose の対応箇所: services.backend.build)
+#   Dockerfile (設計図) とビルドコンテキスト (材料フォルダ) からイメージ「
+#   eap-adot-local-backend」を作ります。
+# ----------------------------------------------------------------------------
+docker build \
+  --file /opt/Container_Compose_file/docker/back/Dockerfile \
+  --build-arg EAP_BASE_IMAGE=your-registry.example.com/base/eap81-openjdk21-ubi9:latest \
+  --tag eap-adot-local-backend \
+  /opt/Container_Compose_file/docker
+
+# ----------------------------------------------------------------------------
+# STEP 20/58 [イメージ作成] サービス「frontend」のイメージ「eap-adot-local-frontend」をビルドする
+#   (compose の対応箇所: services.frontend.build)
+#   Dockerfile (設計図) とビルドコンテキスト (材料フォルダ) からイメージ「
+#   eap-adot-local-frontend」を作ります。
+# ----------------------------------------------------------------------------
+docker build \
+  --file /opt/Container_Compose_file/docker/front/Dockerfile \
+  --build-arg EAP_BASE_IMAGE=your-registry.example.com/base/eap81-openjdk21-ubi9:latest \
+  --tag eap-adot-local-frontend \
+  /opt/Container_Compose_file/docker
+
+# ----------------------------------------------------------------------------
+# STEP 21/58 [イメージ作成] サービス「lambda-esm」のイメージ「eap-adot-local-lambda-esm」をビルドする
+#   (compose の対応箇所: services.lambda-esm.build)
+#   Dockerfile (設計図) とビルドコンテキスト (材料フォルダ) からイメージ「
+#   eap-adot-local-lambda-esm」を作ります。
+# ----------------------------------------------------------------------------
+docker build \
+  --tag eap-adot-local-lambda-esm \
+  /opt/Container_Compose_file/compose/lambda-esm
+
+# ----------------------------------------------------------------------------
+# STEP 22/58 [イメージ作成] サービス「ecs-exec」のイメージ「eap-adot-local-ecs-exec」をビルドする
+#   (compose の対応箇所: services.ecs-exec.build)
+#   Dockerfile (設計図) とビルドコンテキスト (材料フォルダ) からイメージ「
+#   eap-adot-local-ecs-exec」を作ります。
+# ----------------------------------------------------------------------------
+docker build \
+  --tag eap-adot-local-ecs-exec \
+  /opt/Container_Compose_file/compose/ecs-exec
+
+# ----------------------------------------------------------------------------
+# STEP 23/58 [ヘルスチェック入りイメージ作成] サービス「adot-collector」用に、ヘルスチェックを焼き込んだイメージ「eap-adot-local-adot-collector:with-healthcheck」を作る
+#   (compose の対応箇所: services.adot-collector.healthcheck)
+#   compose の healthcheck は exec 形式 (test: ["CMD", ...]) ですが、docker
+#   run の --health-cmd はシェル形式 (/bin/sh -c で実行) しか書けません。同
+#   じ動きにするため、元のイメージに HEALTHCHECK だけを追加した派生イメージ
+#   を作ります。
+# ----------------------------------------------------------------------------
+docker build --tag eap-adot-local-adot-collector:with-healthcheck - <<'C2D_DOCKERFILE'
+FROM public.ecr.aws/aws-observability/aws-otel-collector:v0.43.3
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=5 CMD ["/healthcheck"]
+C2D_DOCKERFILE
+
+# ----------------------------------------------------------------------------
+# STEP 24/58 [ヘルスチェック入りイメージ作成] サービス「alb-front」用に、ヘルスチェックを焼き込んだイメージ「eap-adot-local-alb-front:with-healthcheck」を作る
+#   (compose の対応箇所: services.alb-front.healthcheck)
+#   compose の healthcheck は exec 形式 (test: ["CMD", ...]) ですが、docker
+#   run の --health-cmd はシェル形式 (/bin/sh -c で実行) しか書けません。同
+#   じ動きにするため、元のイメージに HEALTHCHECK だけを追加した派生イメージ
+#   を作ります。
+# ----------------------------------------------------------------------------
+docker build --tag eap-adot-local-alb-front:with-healthcheck - <<'C2D_DOCKERFILE'
+FROM python:3.12-slim
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=5 CMD ["python3", "/opt/alb-front/alb-front.py", "ready"]
+C2D_DOCKERFILE
+
+# ----------------------------------------------------------------------------
+# STEP 25/58 [ヘルスチェック入りイメージ作成] サービス「ecs-exec」用に、ヘルスチェックを焼き込んだイメージ「eap-adot-local-ecs-exec:with-healthcheck」を作る
+#   (compose の対応箇所: services.ecs-exec.healthcheck)
+#   compose の healthcheck は exec 形式 (test: ["CMD", ...]) ですが、docker
+#   run の --health-cmd はシェル形式 (/bin/sh -c で実行) しか書けません。同
+#   じ動きにするため、元のイメージに HEALTHCHECK だけを追加した派生イメージ
+#   を作ります。
+# ----------------------------------------------------------------------------
+docker build --tag eap-adot-local-ecs-exec:with-healthcheck - <<'C2D_DOCKERFILE'
+FROM eap-adot-local-ecs-exec
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 CMD ["ecs-exec", "doctor", "--self-only", "--quiet"]
+C2D_DOCKERFILE
+
+# ----------------------------------------------------------------------------
+# STEP 26/58 [コンテナ起動] サービス「jaeger」のコンテナ「jaeger」を起動する
+#   (compose の対応箇所: services.jaeger)
+#   イメージ「jaegertracing/jaeger:2.4.0」からコンテナ「jaeger」を作って起動
+#   します (サービス「jaeger」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name jaeger \
+  --network eap-adot-local_default \
+  --network-alias jaeger \
+  --publish 16686:16686 \
+  jaegertracing/jaeger:2.4.0
+
+# ----------------------------------------------------------------------------
+# STEP 27/58 [コンテナ起動] サービス「valkey」のコンテナ「valkey」を起動する
+#   (compose の対応箇所: services.valkey)
+#   イメージ「valkey/valkey:8.0」からコンテナ「valkey」を作って起動します (
+#   サービス「valkey」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name valkey \
+  --network eap-adot-local_default \
+  --network-alias valkey \
+  --publish 6379:6379 \
+  --health-cmd 'valkey-cli ping | grep -q PONG' \
+  --health-interval 3s \
+  --health-timeout 3s \
+  --health-start-period 3s \
+  --health-retries 20 \
+  valkey/valkey:8.0
+
+# ----------------------------------------------------------------------------
+# STEP 28/58 [コンテナ起動] サービス「svf-mock」のコンテナ「svf-mock」を起動する
+#   (compose の対応箇所: services.svf-mock)
+#   イメージ「wiremock/wiremock:3.13.0」からコンテナ「svf-mock」を作って起動
+#   します (サービス「svf-mock」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name svf-mock \
+  --network eap-adot-local_default \
+  --network-alias svf-mock \
+  --publish 8280:8080 \
+  --volume /opt/Container_Compose_file/compose/svf-mock/mappings:/home/wiremock/mappings:ro \
+  --health-cmd "timeout 2 bash -c '</dev/tcp/127.0.0.1/8080' || exit 1" \
+  --health-interval 3s \
+  --health-timeout 3s \
+  --health-start-period 5s \
+  --health-retries 40 \
+  wiremock/wiremock:3.13.0
+
+# ----------------------------------------------------------------------------
+# STEP 29/58 [コンテナ起動] サービス「ecs-metadata-mock」のコンテナ「ecs-metadata-mock」を起動する
+#   (compose の対応箇所: services.ecs-metadata-mock)
+#   イメージ「wiremock/wiremock:3.13.0」からコンテナ「ecs-metadata-mock」を
+#   作って起動します (サービス「ecs-metadata-mock」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name ecs-metadata-mock \
+  --network eap-adot-local_default \
+  --network-alias ecs-metadata-mock \
+  --publish 8380:8080 \
+  --volume /opt/Container_Compose_file/compose/ecs-metadata-mock/mappings:/home/wiremock/mappings:ro \
+  --health-cmd "timeout 2 bash -c '</dev/tcp/127.0.0.1/8080' || exit 1" \
+  --health-interval 3s \
+  --health-timeout 3s \
+  --health-start-period 5s \
+  --health-retries 40 \
+  wiremock/wiremock:3.13.0
+
+# ----------------------------------------------------------------------------
+# STEP 30/58 [起動待ち] ecs-metadata-mock が healthy になるまで待つ
+#   (compose の対応箇所: services.adot-collector.depends_on)
+#   サービス「adot-collector」は depends_on で ecs-metadata-mock が「
+#   service_healthy (ヘルスチェックに合格)」になるのを待ってから起動する設定
+#   です。同じように、合格するまで 2 秒おきに状態を確認して待ちます。
+#   ※ NG と表示されたら、ここで手を止めて docker logs <コンテナ名> で原因を
+#   確認してください (この後のコマンドを続けても、依存先が正常でないため動か
+#   ない可能性があります)。
+# ----------------------------------------------------------------------------
+for C in ecs-metadata-mock; do
+  echo "[待機] ${C} が healthy (正常) になるまで待ちます..."
+  while :; do
+    S="$(docker inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{end}}' "${C}" 2>&1)"
+    case "${S}" in
+      running:healthy) echo "[OK] ${C} は healthy です"; break ;;
+      running:starting|restarting:*) sleep 2 ;;
+      *) echo "[NG] ${C} の状態は ${S} です。docker logs ${C} で原因を確認してください"; break ;;
+    esac
+  done
+done
+
+# ----------------------------------------------------------------------------
+# STEP 31/58 [コンテナ起動] サービス「adot-collector」のコンテナ「adot-collector」を起動する
+#   (compose の対応箇所: services.adot-collector)
+#   イメージ「eap-adot-local-adot-collector:with-healthcheck」からコンテナ「
+#   adot-collector」を作って起動します (サービス「adot-collector」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name adot-collector \
+  --network eap-adot-local_default \
+  --network-alias adot-collector \
+  --publish 4318:4318 \
+  --volume /opt/Container_Compose_file/compose/otel/adot-collector-local.yaml:/etc/otel/config.yaml:ro \
+  --env ECS_CONTAINER_METADATA_URI_V4=http://ecs-metadata-mock:8080/v4/158d1c8083dd49d6b527399fd6414f5c-3456789012 \
+  eap-adot-local-adot-collector:with-healthcheck \
+  --config=/etc/otel/config.yaml
+
+# ----------------------------------------------------------------------------
+# STEP 32/58 [コンテナ起動] サービス「efs-mock」のコンテナ「efs-mock」を起動する
+#   (compose の対応箇所: services.efs-mock)
+#   イメージ「alpine:3.21」からコンテナ「efs-mock」を作って起動します (サー
+#   ビス「efs-mock」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name efs-mock \
+  --network eap-adot-local_default \
+  --network-alias efs-mock \
+  --volume eap-adot-local_efs-logs:/mnt/efs/logs \
+  --volume eap-adot-local_efs-data:/mnt/efs/data \
+  --health-cmd 'test -f /tmp/efs-initialized && [ "$(stat -c %u:%g /mnt/efs/logs)" = "6301:6302" ] && [ "$(stat -c %u:%g /mnt/efs/data)" = "6301:6302" ]' \
+  --health-interval 5s \
+  --health-timeout 3s \
+  --health-start-period 3s \
+  --health-retries 5 \
+  alpine:3.21 \
+  sh \
+  -euc \
+  $'chown 6301:6302 /mnt/efs/logs /mnt/efs/data\nchmod 2775 /mnt/efs/logs /mnt/efs/data\necho "[efs-mock] initialized /mnt/efs/logs /mnt/efs/data (owner=6301:6302 mode=2775)"\ntouch /tmp/efs-initialized\nexec tail -f /dev/null\n'
+
+# ----------------------------------------------------------------------------
+# STEP 33/58 [起動待ち] efs-mock が healthy になるまで待つ
+#   (compose の対応箇所: services.batch-mock.depends_on)
+#   サービス「batch-mock」は depends_on で efs-mock が「service_healthy (ヘ
+#   ルスチェックに合格)」になるのを待ってから起動する設定です。同じように、
+#   合格するまで 2 秒おきに状態を確認して待ちます。
+#   ※ NG と表示されたら、ここで手を止めて docker logs <コンテナ名> で原因を
+#   確認してください (この後のコマンドを続けても、依存先が正常でないため動か
+#   ない可能性があります)。
+# ----------------------------------------------------------------------------
+for C in efs-mock; do
+  echo "[待機] ${C} が healthy (正常) になるまで待ちます..."
+  while :; do
+    S="$(docker inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{end}}' "${C}" 2>&1)"
+    case "${S}" in
+      running:healthy) echo "[OK] ${C} は healthy です"; break ;;
+      running:starting|restarting:*) sleep 2 ;;
+      *) echo "[NG] ${C} の状態は ${S} です。docker logs ${C} で原因を確認してください"; break ;;
+    esac
+  done
+done
+
+# ----------------------------------------------------------------------------
+# STEP 34/58 [コンテナ起動] サービス「batch-mock」のコンテナ「batch-mock」を起動する
+#   (compose の対応箇所: services.batch-mock)
+#   イメージ「alpine:3.21」からコンテナ「batch-mock」を作って起動します (サー
+#   ビス「batch-mock」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name batch-mock \
+  --user 6301:6302 \
+  --network eap-adot-local_default \
+  --network-alias batch-mock \
+  --volume /opt/Container_Compose_file/compose/batch-mock/efs-propagation.sh:/opt/batch-mock/efs-propagation.sh:ro \
+  --volume eap-adot-local_efs-logs:/mnt/logs \
+  --volume eap-adot-local_efs-data:/mnt/data \
+  --env BATCH_MOCK_CLI=/opt/batch-mock/efs-propagation.sh \
+  --env 'BATCH_MOCK_EFS_DIRS=/mnt/logs /mnt/data' \
+  --health-cmd '/bin/sh /opt/batch-mock/efs-propagation.sh ready || exit 1' \
+  --health-interval 10s \
+  --health-timeout 5s \
+  --health-start-period 5s \
+  --health-retries 5 \
+  alpine:3.21 \
+  sh -euc $'/bin/sh /opt/batch-mock/efs-propagation.sh init\nexec tail -f /dev/null\n'
+
+# ----------------------------------------------------------------------------
+# STEP 35/58 [コンテナ起動] サービス「cloudwatch-logs-mock」のコンテナ「cloudwatch-logs-mock」を起動する
+#   (compose の対応箇所: services.cloudwatch-logs-mock)
+#   イメージ「wiremock/wiremock:3.13.0」からコンテナ「cloudwatch-logs-mock」
+#   を作って起動します (サービス「cloudwatch-logs-mock」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name cloudwatch-logs-mock \
+  --network eap-adot-local_default \
+  --network-alias cloudwatch-logs-mock \
+  --publish 8480:8080 \
+  --volume /opt/Container_Compose_file/compose/cloudwatch-logs-mock/mappings:/home/wiremock/mappings:ro \
+  --health-cmd "timeout 2 bash -c '</dev/tcp/127.0.0.1/8080' || exit 1" \
+  --health-interval 3s \
+  --health-timeout 3s \
+  --health-start-period 5s \
+  --health-retries 40 \
+  wiremock/wiremock:3.13.0
+
+# ----------------------------------------------------------------------------
+# STEP 36/58 [起動待ち] cloudwatch-logs-mock・ecs-metadata-mock・efs-mock が healthy になるまで待つ
+#   (compose の対応箇所: services.cwagent.depends_on)
+#   サービス「cwagent」は depends_on で cloudwatch-logs-mock・
+#   ecs-metadata-mock・efs-mock が「service_healthy (ヘルスチェックに合格)」
+#   になるのを待ってから起動する設定です。同じように、合格するまで 2 秒おき
+#   に状態を確認して待ちます。
+#   ※ NG と表示されたら、ここで手を止めて docker logs <コンテナ名> で原因を
+#   確認してください (この後のコマンドを続けても、依存先が正常でないため動か
+#   ない可能性があります)。
+# ----------------------------------------------------------------------------
+for C in cloudwatch-logs-mock ecs-metadata-mock efs-mock; do
+  echo "[待機] ${C} が healthy (正常) になるまで待ちます..."
+  while :; do
+    S="$(docker inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{end}}' "${C}" 2>&1)"
+    case "${S}" in
+      running:healthy) echo "[OK] ${C} は healthy です"; break ;;
+      running:starting|restarting:*) sleep 2 ;;
+      *) echo "[NG] ${C} の状態は ${S} です。docker logs ${C} で原因を確認してください"; break ;;
+    esac
+  done
+done
+
+# ----------------------------------------------------------------------------
+# STEP 37/58 [コンテナ起動] サービス「cwagent」のコンテナ「cwagent」を起動する
+#   (compose の対応箇所: services.cwagent)
+#   イメージ「public.ecr.aws/cloudwatch-agent/cloudwatch-agent:latest」から
+#   コンテナ「cwagent」を作って起動します (サービス「cwagent」)。
+#   ※ compose で entrypoint を指定すると、イメージの CMD は使われません
+#   (docker run --entrypoint も同じ)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name cwagent \
+  --group-add 6302 \
+  --network eap-adot-local_default \
+  --network-alias cwagent \
+  --volume /opt/Container_Compose_file/compose/cwagent/cwagent-config.json:/etc/cwagentconfig/cwagent-config.json:ro \
+  --volume /opt/Container_Compose_file/compose/cwagent/aws-credentials:/root/.aws/credentials:ro \
+  --volume /opt/Container_Compose_file/compose/cwagent/verify-mount.sh:/opt/cwagent-verify/verify-mount.sh:ro \
+  --volume eap-adot-local_efs-logs:/mnt/logs:ro \
+  --env AWS_REGION=ap-northeast-1 \
+  --env CWA_VERIFY_CONFIG_DIR=/etc/cwagentconfig \
+  --env CWA_VERIFY_EXPECT_MODE=775 \
+  --env CWA_VERIFY_EXPECT_OWNER=6301:6302 \
+  --env CWA_VERIFY_MOUNTS=/mnt/logs \
+  --env CWA_VERIFY_RECHECK_COUNT=5 \
+  --env CWA_VERIFY_RECHECK_INTERVAL=20 \
+  --env CWA_VERIFY_RELAY_AGENT_LOG=1 \
+  --env ECS_CONTAINER_METADATA_URI_V4=http://ecs-metadata-mock:8080/v4/158d1c8083dd49d6b527399fd6414f5c-4567890123 \
+  --health-cmd 'read -r v < /tmp/cwagent-verify.boot.result && [ "$v" != FAIL ]' \
+  --health-interval 5s \
+  --health-timeout 3s \
+  --health-start-period 5s \
+  --health-retries 12 \
+  --entrypoint /bin/sh \
+  public.ecr.aws/cloudwatch-agent/cloudwatch-agent:latest \
+  /opt/cwagent-verify/verify-mount.sh \
+  /opt/aws/amazon-cloudwatch-agent/bin/start-amazon-cloudwatch-agent
+
+# ----------------------------------------------------------------------------
+# STEP 38/58 [コンテナ起動] サービス「sqs」のコンテナ「sqs」を起動する
+#   (compose の対応箇所: services.sqs)
+#   イメージ「softwaremill/elasticmq-native:1.6.11」からコンテナ「sqs」を作
+#   って起動します (サービス「sqs」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name sqs \
+  --network eap-adot-local_default \
+  --network-alias sqs \
+  --publish 9324:9324 \
+  --publish 9325:9325 \
+  --volume /opt/Container_Compose_file/compose/sqs/elasticmq.conf:/opt/elasticmq.conf:ro \
+  softwaremill/elasticmq-native:1.6.11
+
+# ----------------------------------------------------------------------------
+# STEP 39/58 [コンテナ起動] サービス「pki-init」のコンテナ「pki-init」を起動する
+#   (compose の対応箇所: services.pki-init)
+#   イメージ「eap-adot-local-pki-init」からコンテナ「pki-init」を作って起動
+#   します (サービス「pki-init」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name pki-init \
+  --network eap-adot-local_default \
+  --network-alias pki-init \
+  --volume eap-adot-local_pki:/pki \
+  --volume /opt/Container_Compose_file/compose/pki/provided:/provided:ro \
+  --volume /opt/Container_Compose_file/compose/pki/export:/export \
+  --env 'PKI_CA_CN=Local Test Self-Signed CA' \
+  --env PKI_DAYS_CA=3650 \
+  --env PKI_DAYS_LEAF=825 \
+  --env PKI_EXPORT_DIR=/export \
+  --env PKI_EXPORT_KEY=1 \
+  --env PKI_FORCE_REGENERATE=0 \
+  --env PKI_KEYSTORE_PASSWORD=changeit \
+  --env PKI_MODE=auto \
+  --env PKI_PROVIDED_DIR=/provided \
+  --env PKI_ROOT=/pki \
+  --env PKI_TRUST_LOCAL_CA=1 \
+  --health-cmd 'test -f /pki/.pki-ready && test -f /pki/ca/cacert.crt && test -f /pki/ca/verify-bundle.crt && test -f /pki/secure-api/server.p12 && test -f /pki/alb/selfsigned/server.key && test -f /pki/alb/ca-issued/server.key && test -f /pki/rds-proxy/server.key && test -f /pki/trust/cacert.crt' \
+  --health-interval 3s \
+  --health-timeout 3s \
+  --health-start-period 2s \
+  --health-retries 20 \
+  eap-adot-local-pki-init
+
+# ----------------------------------------------------------------------------
+# STEP 40/58 [起動待ち] pki-init が healthy になるまで待つ
+#   (compose の対応箇所: services.mysql.depends_on)
+#   サービス「mysql」は depends_on で pki-init が「service_healthy (ヘルスチ
+#   ェックに合格)」になるのを待ってから起動する設定です。同じように、合格す
+#   るまで 2 秒おきに状態を確認して待ちます。
+#   ※ NG と表示されたら、ここで手を止めて docker logs <コンテナ名> で原因を
+#   確認してください (この後のコマンドを続けても、依存先が正常でないため動か
+#   ない可能性があります)。
+# ----------------------------------------------------------------------------
+for C in pki-init; do
+  echo "[待機] ${C} が healthy (正常) になるまで待ちます..."
+  while :; do
+    S="$(docker inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{end}}' "${C}" 2>&1)"
+    case "${S}" in
+      running:healthy) echo "[OK] ${C} は healthy です"; break ;;
+      running:starting|restarting:*) sleep 2 ;;
+      *) echo "[NG] ${C} の状態は ${S} です。docker logs ${C} で原因を確認してください"; break ;;
+    esac
+  done
+done
+
+# ----------------------------------------------------------------------------
+# STEP 41/58 [コンテナ起動] サービス「mysql」のコンテナ「mysql」を起動する
+#   (compose の対応箇所: services.mysql)
+#   イメージ「mysql:8.4.7」からコンテナ「mysql」を作って起動します (サービス
+#   「mysql」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name mysql \
+  --network eap-adot-local_default \
+  --network-alias mysql \
+  --publish 3306:3306 \
+  --volume /opt/Container_Compose_file/compose/mysql/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro \
+  --volume /opt/Container_Compose_file/compose/mysql/init-infdb.sh:/docker-entrypoint-initdb.d/20-init-infdb.sh:ro \
+  --volume eap-adot-local_pki:/mnt/pki:ro \
+  --volume eap-adot-local_mysql-data:/var/lib/mysql \
+  --env INFDB_PASSWORD=ChangeMe_infdb_P@ss123 \
+  --env MYSQL_DATABASE=appdb \
+  --env MYSQL_PASSWORD=ChangeMe_appdb_P@ss123 \
+  --env MYSQL_ROOT_PASSWORD=localdev-root-change-me \
+  --env MYSQL_USER=appuser \
+  --health-cmd $'mysql --ssl-mode=REQUIRED -h 127.0.0.1 -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" -D"$MYSQL_DATABASE" -e \'SELECT 1\' >/dev/null 2>&1' \
+  --health-interval 5s \
+  --health-timeout 5s \
+  --health-start-period 20s \
+  --health-retries 60 \
+  mysql:8.4.7 \
+  --auto_generate_certs=OFF \
+  --ssl_cert=/mnt/pki/rds-proxy/fullchain.crt \
+  --ssl_key=/mnt/pki/rds-proxy/server.key \
+  --ssl_ca=/mnt/pki/ca/verify-bundle.crt \
+  --require_secure_transport=ON \
+  --tls_version=TLSv1.2,TLSv1.3
+
+# ----------------------------------------------------------------------------
+# STEP 42/58 [起動待ち] adot-collector・ecs-metadata-mock・efs-mock・mysql・pki-init・svf-mock・valkey が healthy になるまで待つ
+#   (compose の対応箇所: services.backend.depends_on)
+#   サービス「backend」は depends_on で adot-collector・ecs-metadata-mock・
+#   efs-mock・mysql・pki-init・svf-mock・valkey が「service_healthy (ヘルス
+#   チェックに合格)」になるのを待ってから起動する設定です。同じように、合格
+#   するまで 2 秒おきに状態を確認して待ちます。
+#   ※ NG と表示されたら、ここで手を止めて docker logs <コンテナ名> で原因を
+#   確認してください (この後のコマンドを続けても、依存先が正常でないため動か
+#   ない可能性があります)。
+# ----------------------------------------------------------------------------
+for C in adot-collector ecs-metadata-mock efs-mock mysql pki-init svf-mock valkey; do
+  echo "[待機] ${C} が healthy (正常) になるまで待ちます..."
+  while :; do
+    S="$(docker inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{end}}' "${C}" 2>&1)"
+    case "${S}" in
+      running:healthy) echo "[OK] ${C} は healthy です"; break ;;
+      running:starting|restarting:*) sleep 2 ;;
+      *) echo "[NG] ${C} の状態は ${S} です。docker logs ${C} で原因を確認してください"; break ;;
+    esac
+  done
+done
+
+# ----------------------------------------------------------------------------
+# STEP 43/58 [コンテナ起動] サービス「backend」のコンテナ「backend」を起動する
+#   (compose の対応箇所: services.backend)
+#   イメージ「eap-adot-local-backend」からコンテナ「backend」を作って起動し
+#   ます (サービス「backend」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name backend \
+  --group-add 6302 \
+  --network eap-adot-local_default \
+  --network-alias backend \
+  --publish 8180:8180 \
+  --volume eap-adot-local_efs-logs:/mnt/logs \
+  --volume eap-adot-local_efs-data:/mnt/data \
+  --volume eap-adot-local_pki:/mnt/pki:ro \
+  --env ASYNC_QUEUE_NAME=app-async-queue \
+  --env ASYNC_SQS_ENDPOINT=http://sqs:9324 \
+  --env AWS_REGION=ap-northeast-1 \
+  --env DB_HOST=mysql \
+  --env DB_NAME=appdb \
+  --env DB_PASSWORD=ChangeMe_appdb_P@ss123 \
+  --env DB_PORT=3306 \
+  --env DB_SSL_MODE=VERIFY_IDENTITY \
+  --env DB_USER=appuser \
+  --env ECS_CONTAINER_METADATA_URI_V4=http://ecs-metadata-mock:8080/v4/158d1c8083dd49d6b527399fd6414f5c-2345678901 \
+  --env JBOSS_TRUSTSTORE_FILE=/opt/server/standalone/configuration/jboss-truststore.p12 \
+  --env JBOSS_TRUSTSTORE_PASSWORD=changeit \
+  --env OTEL_EXPORTER_OTLP_ENDPOINT=http://adot-collector:4318 \
+  --env OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
+  --env OTEL_RESOURCE_ATTRIBUTES=service.namespace=myapp,service.version=local,deployment.environment=local,aws.ecs.service.name=local-compose \
+  --env OTEL_SERVICE_NAME=myapp-back \
+  --env OTEL_TRACES_SAMPLER=parentbased_always_on \
+  --env PKI_TRUST_DIR=/mnt/pki/trust \
+  --env PORT_OFFSET=100 \
+  --env SECURE_API_URL=https://secure-api:8443/api/v1/ping \
+  --env SECURE_API_VIA_ALB_URL=https://alb/secure/v1/ping \
+  --env SVF_BASE_URL=http://svf-mock:8080 \
+  --env TX_NODE_ID=back-local-1 \
+  --env VALKEY_HOST=valkey \
+  --env VALKEY_PORT=6379 \
+  --health-cmd 'curl -fs http://127.0.0.1:8180/ >/dev/null || exit 1' \
+  --health-interval 30s \
+  --health-timeout 5s \
+  --health-start-period 2m0s \
+  --health-retries 3 \
+  eap-adot-local-backend
+
+# ----------------------------------------------------------------------------
+# STEP 44/58 [起動待ち] adot-collector・ecs-metadata-mock・efs-mock・mysql・pki-init・valkey が healthy になるまで待つ
+#   (compose の対応箇所: services.frontend.depends_on)
+#   サービス「frontend」は depends_on で adot-collector・ecs-metadata-mock・
+#   efs-mock・mysql・pki-init・valkey が「service_healthy (ヘルスチェックに
+#   合格)」になるのを待ってから起動する設定です。同じように、合格するまで 2
+#   秒おきに状態を確認して待ちます。
+#   ※ NG と表示されたら、ここで手を止めて docker logs <コンテナ名> で原因を
+#   確認してください (この後のコマンドを続けても、依存先が正常でないため動か
+#   ない可能性があります)。
+# ----------------------------------------------------------------------------
+for C in adot-collector ecs-metadata-mock efs-mock mysql pki-init valkey; do
+  echo "[待機] ${C} が healthy (正常) になるまで待ちます..."
+  while :; do
+    S="$(docker inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{end}}' "${C}" 2>&1)"
+    case "${S}" in
+      running:healthy) echo "[OK] ${C} は healthy です"; break ;;
+      running:starting|restarting:*) sleep 2 ;;
+      *) echo "[NG] ${C} の状態は ${S} です。docker logs ${C} で原因を確認してください"; break ;;
+    esac
+  done
+done
+
+# ----------------------------------------------------------------------------
+# STEP 45/58 [コンテナ起動] サービス「frontend」のコンテナ「frontend」を起動する
+#   (compose の対応箇所: services.frontend)
+#   イメージ「eap-adot-local-frontend」からコンテナ「frontend」を作って起動
+#   します (サービス「frontend」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name frontend \
+  --group-add 6302 \
+  --network eap-adot-local_default \
+  --network-alias frontend \
+  --publish 8080:8080 \
+  --volume eap-adot-local_efs-logs:/mnt/logs \
+  --volume eap-adot-local_efs-data:/mnt/data \
+  --volume eap-adot-local_pki:/mnt/pki:ro \
+  --env ASYNC_QUEUE_NAME=app-async-queue \
+  --env ASYNC_SQS_ENDPOINT=http://sqs:9324 \
+  --env AWS_REGION=ap-northeast-1 \
+  --env BACK_BASE_URL=http://backend:8180 \
+  --env DB_HOST=mysql \
+  --env DB_NAME=appdb \
+  --env DB_PASSWORD=ChangeMe_appdb_P@ss123 \
+  --env DB_PORT=3306 \
+  --env DB_SSL_MODE=VERIFY_IDENTITY \
+  --env DB_USER=appuser \
+  --env ECS_CONTAINER_METADATA_URI_V4=http://ecs-metadata-mock:8080/v4/158d1c8083dd49d6b527399fd6414f5c-1234567890 \
+  --env JBOSS_TRUSTSTORE_FILE=/opt/server/standalone/configuration/jboss-truststore.p12 \
+  --env JBOSS_TRUSTSTORE_PASSWORD=changeit \
+  --env OTEL_EXPORTER_OTLP_ENDPOINT=http://adot-collector:4318 \
+  --env OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
+  --env OTEL_RESOURCE_ATTRIBUTES=service.namespace=myapp,service.version=local,deployment.environment=local,aws.ecs.service.name=local-compose \
+  --env OTEL_SERVICE_NAME=myapp-front \
+  --env OTEL_TRACES_SAMPLER=parentbased_always_on \
+  --env PKI_TRUST_DIR=/mnt/pki/trust \
+  --env SECURE_API_URL=https://secure-api:8443/api/v1/ping \
+  --env SECURE_API_VIA_ALB_URL=https://alb/secure/v1/ping \
+  --env TX_NODE_ID=front-local-1 \
+  --env VALKEY_HOST=valkey \
+  --env VALKEY_PORT=6379 \
+  --health-cmd 'curl -fs http://127.0.0.1:8080/ >/dev/null || exit 1' \
+  --health-interval 30s \
+  --health-timeout 5s \
+  --health-start-period 2m0s \
+  --health-retries 3 \
+  eap-adot-local-frontend
+
+# ----------------------------------------------------------------------------
+# STEP 46/58 [コンテナ起動] サービス「alb-healthcheck」のコンテナ「alb-healthcheck」を起動する
+#   (compose の対応箇所: services.alb-healthcheck)
+#   イメージ「python:3.12-slim」からコンテナ「alb-healthcheck」を作って起動
+#   します (サービス「alb-healthcheck」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name alb-healthcheck \
+  --network eap-adot-local_default \
+  --network-alias alb-healthcheck \
+  --publish 8580:8080 \
+  --volume /opt/Container_Compose_file/compose/alb-healthcheck/healthcheck.py:/opt/alb-healthcheck/healthcheck.py:ro \
+  --volume /opt/Container_Compose_file/compose/alb-healthcheck/targets.json:/etc/alb-healthcheck/targets.json:ro \
+  --env ALB_HEALTHCHECK_CLI=/opt/alb-healthcheck/healthcheck.py \
+  --env ALB_HEALTHCHECK_HISTORY_LIMIT=10 \
+  --env ALB_HEALTHCHECK_LISTEN_PORT=8080 \
+  --env ALB_HEALTHCHECK_TARGETS_FILE=/etc/alb-healthcheck/targets.json \
+  --env PYTHONUNBUFFERED=1 \
+  --health-cmd 'python3 /opt/alb-healthcheck/healthcheck.py ready || exit 1' \
+  --health-interval 10s \
+  --health-timeout 5s \
+  --health-start-period 5s \
+  --health-retries 5 \
+  python:3.12-slim \
+  python3 /opt/alb-healthcheck/healthcheck.py serve
+
+# ----------------------------------------------------------------------------
+# STEP 47/58 [起動待ち] pki-init が healthy になるまで待つ
+#   (compose の対応箇所: services.alb-front.depends_on)
+#   サービス「alb-front」は depends_on で pki-init が「service_healthy (ヘル
+#   スチェックに合格)」になるのを待ってから起動する設定です。同じように、合
+#   格するまで 2 秒おきに状態を確認して待ちます。
+#   ※ NG と表示されたら、ここで手を止めて docker logs <コンテナ名> で原因を
+#   確認してください (この後のコマンドを続けても、依存先が正常でないため動か
+#   ない可能性があります)。
+# ----------------------------------------------------------------------------
+for C in pki-init; do
+  echo "[待機] ${C} が healthy (正常) になるまで待ちます..."
+  while :; do
+    S="$(docker inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{end}}' "${C}" 2>&1)"
+    case "${S}" in
+      running:healthy) echo "[OK] ${C} は healthy です"; break ;;
+      running:starting|restarting:*) sleep 2 ;;
+      *) echo "[NG] ${C} の状態は ${S} です。docker logs ${C} で原因を確認してください"; break ;;
+    esac
+  done
+done
+
+# ----------------------------------------------------------------------------
+# STEP 48/58 [コンテナ起動] サービス「alb-front」のコンテナ「alb-front」を起動する
+#   (compose の対応箇所: services.alb-front)
+#   イメージ「eap-adot-local-alb-front:with-healthcheck」からコンテナ「
+#   alb-front」を作って起動します (サービス「alb-front」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name alb-front \
+  --network eap-adot-local_default \
+  --network-alias alb-front \
+  --publish 8443:8443 \
+  --publish 8581:8081 \
+  --volume /opt/Container_Compose_file/compose/alb-front/alb-front.py:/opt/alb-front/alb-front.py:ro \
+  --volume eap-adot-local_pki:/pki:ro \
+  --env ALB_FRONT_ADMIN_PORT=8081 \
+  --env ALB_FRONT_CA_BUNDLE=/pki/ca/verify-bundle.crt \
+  --env ALB_FRONT_CHECK_HOST=localhost \
+  --env ALB_FRONT_CHECK_PATH=/iwinmichl/api/redirect-check/redirect \
+  --env ALB_FRONT_CLI=/opt/alb-front/alb-front.py \
+  --env ALB_FRONT_CONNECT_TIMEOUT=10 \
+  --env ALB_FRONT_HTTPS_PORT=8443 \
+  --env ALB_FRONT_IDLE_TIMEOUT=60 \
+  --env ALB_FRONT_TARGET=http://frontend:8080 \
+  --env ALB_FRONT_TLS_CERT=/pki/alb/ca-issued/fullchain.crt \
+  --env ALB_FRONT_TLS_KEY=/pki/alb/ca-issued/server.key \
+  --env PYTHONUNBUFFERED=1 \
+  eap-adot-local-alb-front:with-healthcheck \
+  python3 /opt/alb-front/alb-front.py serve
+
+# ----------------------------------------------------------------------------
+# STEP 49/58 [起動待ち] pki-init が healthy になるまで待つ
+#   (compose の対応箇所: services.secure-api.depends_on)
+#   サービス「secure-api」は depends_on で pki-init が「service_healthy (ヘ
+#   ルスチェックに合格)」になるのを待ってから起動する設定です。同じように、
+#   合格するまで 2 秒おきに状態を確認して待ちます。
+#   ※ NG と表示されたら、ここで手を止めて docker logs <コンテナ名> で原因を
+#   確認してください (この後のコマンドを続けても、依存先が正常でないため動か
+#   ない可能性があります)。
+# ----------------------------------------------------------------------------
+for C in pki-init; do
+  echo "[待機] ${C} が healthy (正常) になるまで待ちます..."
+  while :; do
+    S="$(docker inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{end}}' "${C}" 2>&1)"
+    case "${S}" in
+      running:healthy) echo "[OK] ${C} は healthy です"; break ;;
+      running:starting|restarting:*) sleep 2 ;;
+      *) echo "[NG] ${C} の状態は ${S} です。docker logs ${C} で原因を確認してください"; break ;;
+    esac
+  done
+done
+
+# ----------------------------------------------------------------------------
+# STEP 50/58 [コンテナ起動] サービス「secure-api」のコンテナ「secure-api」を起動する
+#   (compose の対応箇所: services.secure-api)
+#   イメージ「wiremock/wiremock:3.13.0」からコンテナ「secure-api」を作って起
+#   動します (サービス「secure-api」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name secure-api \
+  --network eap-adot-local_default \
+  --network-alias secure-api \
+  --publish 8543:8443 \
+  --volume /opt/Container_Compose_file/compose/secure-api/mappings:/home/wiremock/mappings:ro \
+  --volume eap-adot-local_pki:/pki:ro \
+  --health-cmd "timeout 2 bash -c '</dev/tcp/127.0.0.1/8443' || exit 1" \
+  --health-interval 3s \
+  --health-timeout 3s \
+  --health-start-period 5s \
+  --health-retries 40 \
+  wiremock/wiremock:3.13.0 \
+  --https-port=8443 \
+  --https-keystore=/pki/secure-api/server.p12 \
+  --keystore-type=PKCS12 \
+  --keystore-password=changeit \
+  --key-manager-password=changeit \
+  --disable-http \
+  --verbose
+
+# ----------------------------------------------------------------------------
+# STEP 51/58 [コンテナ起動] サービス「maintenance-lambda」のコンテナ「maintenance-lambda」を起動する
+#   (compose の対応箇所: services.maintenance-lambda)
+#   イメージ「public.ecr.aws/lambda/python:3.12」からコンテナ「
+#   maintenance-lambda」を作って起動します (サービス「maintenance-lambda」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name maintenance-lambda \
+  --network eap-adot-local_default \
+  --network-alias maintenance-lambda \
+  --publish 9001:8080 \
+  --volume /opt/Container_Compose_file/compose/maintenance-lambda/app:/var/task:ro \
+  --env MAINTENANCE_STATUS_CODE=503 \
+  --env MAINTENANCE_UNTIL= \
+  --env RETRY_AFTER_SECONDS=300 \
+  public.ecr.aws/lambda/python:3.12 \
+  maintenance.lambda_handler
+
+# ----------------------------------------------------------------------------
+# STEP 52/58 [コンテナ起動] サービス「alb-lambda-adapter」のコンテナ「alb-lambda-adapter」を起動する
+#   (compose の対応箇所: services.alb-lambda-adapter)
+#   イメージ「python:3.12-slim」からコンテナ「alb-lambda-adapter」を作って起
+#   動します (サービス「alb-lambda-adapter」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name alb-lambda-adapter \
+  --network eap-adot-local_default \
+  --network-alias alb-lambda-adapter \
+  --publish 9081:8080 \
+  --volume /opt/Container_Compose_file/compose/alb-lambda-adapter/adapter.py:/app/adapter.py:ro \
+  --env LAMBDA_INVOKE_URL=http://maintenance-lambda:8080/2015-03-31/functions/function/invocations \
+  --env LISTEN_PORT=8080 \
+  python:3.12-slim \
+  python /app/adapter.py
+
+# ----------------------------------------------------------------------------
+# STEP 53/58 [起動待ち] pki-init・secure-api が healthy になるまで待つ
+#   (compose の対応箇所: services.alb.depends_on)
+#   サービス「alb」は depends_on で pki-init・secure-api が「service_healthy
+#   (ヘルスチェックに合格)」になるのを待ってから起動する設定です。同じように、
+#   合格するまで 2 秒おきに状態を確認して待ちます。
+#   ※ NG と表示されたら、ここで手を止めて docker logs <コンテナ名> で原因を
+#   確認してください (この後のコマンドを続けても、依存先が正常でないため動か
+#   ない可能性があります)。
+# ----------------------------------------------------------------------------
+for C in pki-init secure-api; do
+  echo "[待機] ${C} が healthy (正常) になるまで待ちます..."
+  while :; do
+    S="$(docker inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{end}}' "${C}" 2>&1)"
+    case "${S}" in
+      running:healthy) echo "[OK] ${C} は healthy です"; break ;;
+      running:starting|restarting:*) sleep 2 ;;
+      *) echo "[NG] ${C} の状態は ${S} です。docker logs ${C} で原因を確認してください"; break ;;
+    esac
+  done
+done
+
+# ----------------------------------------------------------------------------
+# STEP 54/58 [コンテナ起動] サービス「alb」のコンテナ「alb」を起動する
+#   (compose の対応箇所: services.alb)
+#   イメージ「nginx:1.27-alpine」からコンテナ「alb」を作って起動します (サー
+#   ビス「alb」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name alb \
+  --network eap-adot-local_default \
+  --network-alias alb \
+  --publish 9080:80 \
+  --publish 9443:443 \
+  --volume /opt/Container_Compose_file/compose/alb/nginx.conf:/etc/nginx/nginx.conf:ro \
+  --volume /opt/Container_Compose_file/compose/alb/rules:/etc/nginx/rules:ro \
+  --volume /opt/Container_Compose_file/compose/alb/rules-tls:/etc/nginx/rules-tls:ro \
+  --volume /opt/Container_Compose_file/compose/alb/tls:/etc/nginx/tls:ro \
+  --volume eap-adot-local_pki:/pki:ro \
+  --health-cmd 'wget -qO- http://127.0.0.1/healthz >/dev/null 2>&1 || exit 1' \
+  --health-interval 10s \
+  --health-timeout 5s \
+  --health-start-period 5s \
+  --health-retries 5 \
+  nginx:1.27-alpine
+
+# ----------------------------------------------------------------------------
+# STEP 55/58 [コンテナ起動] サービス「lambda」のコンテナ「lambda」を起動する
+#   (compose の対応箇所: services.lambda)
+#   イメージ「public.ecr.aws/lambda/python:3.12」からコンテナ「lambda」を作
+#   って起動します (サービス「lambda」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name lambda \
+  --network eap-adot-local_default \
+  --network-alias lambda \
+  --publish 9000:8080 \
+  --volume /opt/Container_Compose_file/compose/lambda/app:/var/task:ro \
+  --env ALB_ENDPOINT=http://alb:80 \
+  --env BACK_PATH=/async/receive \
+  --env HTTP_TIMEOUT_SECONDS=10 \
+  public.ecr.aws/lambda/python:3.12 \
+  handler.lambda_handler
+
+# ----------------------------------------------------------------------------
+# STEP 56/58 [コンテナ起動] サービス「lambda-esm」のコンテナ「lambda-esm」を起動する
+#   (compose の対応箇所: services.lambda-esm)
+#   イメージ「eap-adot-local-lambda-esm」からコンテナ「lambda-esm」を作って
+#   起動します (サービス「lambda-esm」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name lambda-esm \
+  --network eap-adot-local_default \
+  --network-alias lambda-esm \
+  --env AWS_ACCESS_KEY_ID=local \
+  --env AWS_REGION=ap-northeast-1 \
+  --env AWS_SECRET_ACCESS_KEY=local \
+  --env BATCH_SIZE=10 \
+  --env LAMBDA_INVOKE_URL=http://lambda:8080/2015-03-31/functions/function/invocations \
+  --env QUEUE_NAME=app-async-queue \
+  --env SQS_ENDPOINT=http://sqs:9324 \
+  --env WAIT_TIME_SECONDS=20 \
+  eap-adot-local-lambda-esm
+
+# ----------------------------------------------------------------------------
+# STEP 57/58 [コンテナ起動] サービス「ecs-exec」のコンテナ「ecs-exec」を起動する
+#   (compose の対応箇所: services.ecs-exec)
+#   イメージ「eap-adot-local-ecs-exec:with-healthcheck」からコンテナ「
+#   ecs-exec」を作って起動します (サービス「ecs-exec」)。
+# ----------------------------------------------------------------------------
+docker run \
+  --detach \
+  --name ecs-exec \
+  --network eap-adot-local_default \
+  --network-alias ecs-exec \
+  --volume /var/run/docker.sock:/var/run/docker.sock \
+  --volume /opt/Container_Compose_file/compose/ecs-exec/tasks.json:/etc/ecs-exec/tasks.json:ro \
+  --volume /opt/Container_Compose_file/compose/ecs-exec/ecs-exec.py:/opt/ecs-exec/ecs-exec.py:ro \
+  --volume /opt/Container_Compose_file/compose/ecs-exec/files:/work \
+  --volume /opt/Container_Compose_file/compose/ecs-exec/sessions:/var/log/ecs-exec \
+  --env AWS_DEFAULT_REGION=ap-northeast-1 \
+  --env AWS_REGION=ap-northeast-1 \
+  --env ECS_EXEC_COMPOSE_PROJECT=eap-adot-local \
+  --env ECS_EXEC_ENABLED=1 \
+  --env ECS_EXEC_FILES_DIR=/work \
+  --env ECS_EXEC_PUT_CHUNK_CHARS=16384 \
+  --env ECS_EXEC_SESSION_LOG_DIR=/var/log/ecs-exec \
+  --env ECS_EXEC_SIMULATE_PLUGIN_MISSING=0 \
+  --env ECS_EXEC_STATE_FILE=/var/lib/ecs-exec/state.json \
+  --env ECS_EXEC_TASKS_FILE=/etc/ecs-exec/tasks.json \
+  eap-adot-local-ecs-exec:with-healthcheck
+
+# ----------------------------------------------------------------------------
+# STEP 58/58 [状態確認] 起動したコンテナの状態を確認する
+#   作ったコンテナ (jaeger、valkey、svf-mock、ecs-metadata-mock、
+#   adot-collector、efs-mock、batch-mock、cloudwatch-logs-mock、cwagent、sqs、
+#   pki-init、mysql、backend、frontend、alb-healthcheck、alb-front、
+#   secure-api、maintenance-lambda、alb-lambda-adapter、alb、lambda、
+#   lambda-esm、ecs-exec) が Up (起動中) になっているか、ヘルスチェックの結
+#   果 (healthy など) を確認します。
+# ----------------------------------------------------------------------------
+docker ps \
+  --all \
+  --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+
+# ============================================================================
+#  ここまでで起動は完了です。片付けは docker-commands-down.txt を参照してください。
+# ============================================================================

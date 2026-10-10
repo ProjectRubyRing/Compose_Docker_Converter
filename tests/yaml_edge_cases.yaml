@@ -1,0 +1,79 @@
+# edge cases
+---
+x-base: &base
+  restart: always
+  environment: &env
+    A: "1"
+x-more: &more
+  restart: "no"
+  extra: yes
+svc:
+  <<: [*base, *more]
+  image: nginx   # comment
+  literal: |
+    line1
+      indented
+    line3
+
+  literal_strip: |-
+    keep
+  literal_keep: |+
+    a
+
+  folded: >
+    one
+    two
+
+    three
+      more
+    four
+  folded_strip: >-
+    x
+    y
+  quoted_multi: "first
+    second
+
+    third"
+  single_multi: 'it''s
+    folded'
+  escaped: "tab\there é \x41 end\
+    joined"
+  flow: [a, "b, c", {k: v, n: 1}, [x, y]]
+  flow_multi: {
+    a: 1,   # comment
+    b: [2,
+        3],
+    c
+  }
+  seq_same_indent:
+  - one
+  - two: 2
+    three: 3
+  - - nested1
+    - nested2
+  -
+    deep: true
+  plain_multi: this is
+    a folded plain
+    scalar
+  empty:
+  tilde: ~
+  numbers: [0755, 0o17, 0x1F, 1_000, 1e3, .5, -7, 08, 1.10, +3]
+  bools: [true, True, yes, no, on, off, "true"]
+  reset: !reset []
+  override: !override
+    - a
+  colon_values: [a:b, "c: d", http://x:8080/y]
+  url: http://example.com:8080/path#frag
+  hash_in: "a # b"
+  plain_hash: a#b
+  key with spaces: v
+  "quoted key": qv
+  'single key': sv
+  anchors_in_seq:
+    - &item1 {name: one}
+    - *item1
+  env_alias: *env
+  dash_value: -x
+  neg: -1
+...

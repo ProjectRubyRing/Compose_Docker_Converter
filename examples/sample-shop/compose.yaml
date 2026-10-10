@@ -1,0 +1,205 @@
+# =============================================================================
+# compose2docker の動作確認用サンプル「sample-shop」
+#   web (nginx) → app (自作 Python / build) → db (PostgreSQL) / cache (Valkey)
+#   migrate (1 回だけ動く準備用ジョブ)、toolbox (profiles: debug のときだけ)
+#
+# このファイルを docker compose up -d で起動した環境と、
+# compose2docker で生成した docker コマンドで起動した環境が同じになることを
+# tools/compare_env.py で確認できます。
+# =============================================================================
+name: sample-shop
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_DB: shop
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - db_password
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    networks:
+      - backend
+    shm_size: 128m
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop -d shop"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    logging: *default-logging
+
+  cache:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--appendonly", "yes", "--save", ""]
+    volumes:
+      - cache-data:/data
+    networks:
+      - backend
+    healthcheck:
+      # exec 形式 (シェルを通さず直接実行)。docker run --health-cmd では書けない形
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    logging: *default-logging
+
+  migrate:
+    image: postgres:16-alpine
+    command:
+      - sh
+      - -c
+      - |
+        export PGPASSWORD="$$(cat /run/secrets/db_password)"
+        psql -h db -U shop -d shop -v ON_ERROR_STOP=1 -f /migrations/001_items.sql
+        echo "migration done"
+    secrets:
+      - db_password
+    volumes:
+      - ./db/migrations:/migrations:ro
+    networks:
+      - backend
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    logging: *default-logging
+
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        PYTHON_VERSION: "3.12"
+        APP_VERSION: ${APP_VERSION:-dev}
+      labels:
+        com.example.built-by: compose2docker-sample
+    image: sample-shop/app:${TAG:-latest}
+    env_file:
+      - ./env/app.env
+      - ./env/app.secret.env
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      CACHE_HOST: cache
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SETTINGS_FILE: /etc/shop/settings.ini
+    configs:
+      - source: app_settings
+        target: /etc/shop/settings.ini
+    volumes:
+      - app-cache:/var/cache/shop
+    tmpfs:
+      - /tmp:size=16m
+    user: "10001:10001"
+    init: true
+    networks:
+      backend: {}
+      frontend:
+        aliases:
+          - api
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 8192
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    pre_start:
+      - image: busybox:1.36
+        user: root
+        command: ["sh", "-c", "echo warmed-at-start > /var/cache/shop/warm.txt && chown -R 10001:10001 /var/cache/shop"]
+    post_start:
+      - command: ["sh", "-c", "date > /tmp/started-at"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+    logging: *default-logging
+
+  web:
+    image: nginx:1.27-alpine
+    ports:
+      - "${WEB_PORT:-8088}:80"
+    volumes:
+      - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    # 読み取り専用のファイルシステム + 書き込みが必要な場所だけ tmpfs (メモリ上)
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    cap_drop:
+      - NET_RAW
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - frontend
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    labels:
+      com.example.role: frontend
+    stop_signal: SIGQUIT
+    stop_grace_period: 15s
+    restart: always
+    logging: *default-logging
+
+  toolbox:
+    image: busybox:1.36
+    profiles: ["debug"]
+    network_mode: "service:app"
+    command: ["sleep", "infinity"]
+
+networks:
+  frontend: {}
+  backend:
+    internal: true
+
+volumes:
+  db-data: {}
+  cache-data: {}
+  app-cache: {}
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+
+configs:
+  app_settings:
+    content: |
+      [shop]
+      currency = JPY
+      tax_rate = 0.10
